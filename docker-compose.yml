@@ -1,0 +1,249 @@
+version: "3.8"
+
+services:  
+  ai-law-search:
+    container_name: openlaw-ai-law-streamlit-search-app
+    image: ${REGISTRY_URL}/${REGISTRY_PREFIX}-streamlit:latest
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    ports:
+      - "8588:8588"
+    command: python start_api_search.py
+    volumes:
+      - ./streamlit/apps:/app:rw
+      - ./streamlit/config:/app/config:rw
+      - ./streamlit/certs:/app/certs:rw
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--insecure", "https://localhost:8588/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      jup-net:
+        aliases:
+          - ai-law-search
+    tty: true
+    stdin_open: true
+    working_dir: /app
+
+  os-deploy:
+    container_name: openlaw-ai-os-deploy
+    image: ${REGISTRY_URL}/${REGISTRY_PREFIX}-os_deploy_streamlit:latest
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    ports:
+      - "8257:8257"
+    command: python start_api_search.py
+    volumes:
+      - ./os/apps:/app:rw
+      - ./os/config:/app/config:rw
+      - ./os/certs:/app/certs:rw
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--insecure", "https://localhost:8257/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      jup-net:
+        aliases:
+          - ai-law-search
+    tty: true
+    stdin_open: true
+    working_dir: /app
+
+  redis-main:
+    image: redis:7.2-alpine
+    container_name: openlaw-ai-redis-main
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      jup-net:
+        aliases:
+          - redis-main
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  mongo:
+    image: mongo:latest
+    container_name: openlaw-ai-mongo
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    restart: unless-stopped
+    command: ["mongod", "--quiet"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      jup-net:
+        aliases:
+          - mongo
+    healthcheck:
+      test: ["CMD", "mongo", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  minio:
+    image: minio/minio:latest
+    container_name: openlaw-ai-minio-new
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    ports:
+      - "9003:9003"
+      - "9002:9002"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: ${COMMON_PASSWORD}
+    env_file:
+      - .env
+    command: server /data --console-address 0.0.0.0:9002 --address 0.0.0.0:9003
+    volumes:
+      - minio_data:/data
+    networks:
+      jup-net:
+        aliases:
+          - minio
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9003/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  langgraph-api:
+    image: ${REGISTRY_URL}/${REGISTRY_PREFIX}-langgraph:latest
+    container_name: openlaw-ai-langgraph-api
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    ports:
+      - "8000:8000"
+      - "8383:8383"
+    env_file:
+      - .env
+    working_dir: /app
+    volumes:
+      - ./langgraph/app:/app:rw
+      - ./langgraph/config/config.toml:/app/.streamlit/config.toml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    tty: true
+    stdin_open: true
+    networks:
+      jup-net:
+        aliases:
+          - langgraph-api
+
+  fluentbit:
+    container_name: fluent-bit
+    image: ${REGISTRY_URL}/fluent/fluent-bit
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    ports:
+      - "2025:2025"
+      - "2026:2026"
+    volumes:
+      - ./openlaw-ai-ingest/fluent/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./openlaw-ai-ingest/fluent/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:2026/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      jup-net:
+        aliases:
+          - fluent-bit
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+
+  opensearch-node:
+    image: ${REGISTRY_URL}/${REGISTRY_PREFIX}-opensearch-cluster:latest
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    ports:
+      - "9201:9201"
+    environment:
+      OPENSEARCH_PASSWORD: ${COMMON_PASSWORD}
+      OPENSEARCH_JAVA_OPTS: "-Xms16g -Xmx16g -Dplugins.security.disabled=true --enable-native-access=ALL-UNNAMED"
+    env_file:
+      - .env
+    user: "1000:1000"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+      - ./opensearch-cluster/apps:/app:rw
+    networks:
+      jup-net:
+        aliases:
+          - opensearch-node
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9201"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  opensearch-dashboards:
+    image: ${REGISTRY_URL}/${REGISTRY_PREFIX}-opensearch-dashboards:latest
+    container_name: openlaw-ai-opensearch-dashboards
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    ports:
+      - "5602:5602"
+    environment:
+      OPENSEARCH_HOSTS: "[\"http://opensearch-node:9201\"]"
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
+    env_file:
+      - .env
+    user: "1000:1000"
+    depends_on:
+      - opensearch-node
+    networks:
+      jup-net:
+        aliases:
+          - opensearch-dashboards
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5602"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  redis_data:
+  redisinsight_data:
+  mongo_data:
+  minio_data:
+  opensearch_data:
+  dataprepper_logs:
+  fluentd_persistent:
+
+networks:
+  jup-net:
+    external: true
